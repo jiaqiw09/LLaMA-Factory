@@ -14,13 +14,14 @@ start_time=$(date +%s)
 
 accelerate launch src/train_bash.py \
     --stage sft \
-    --model_name_or_path path_to_llama_model \
+    --model_name_or_path $model_path \
     --do_train \
-    --dataset alpaca_gpt4_en \
+    --dataset $data_path \
     --template default \
     --finetuning_type lora \
     --lora_target q_proj,v_proj \
-    --output_dir path_to_sft_checkpoint \
+    --overwrite_output_dir \
+    --output_dir $checkpoint_path > $log_path/run_chatglm3_7b_sft.log\
     --overwrite_cache \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 4 \

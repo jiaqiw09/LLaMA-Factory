@@ -1,3 +1,15 @@
+#!/bin/bash
+
+cur_path=`pwd`
+cur_path_last_dirname=${cur_path##*/}
+cd ../../
+running_path=`pwd`
+model_path=$running_path/weights/$cur_path_last_dirname
+data_path=$running_path/data/
+checkpoint_path=$running_path/checkpoint_save/$cur_path_last_dirname/rm_checkpoint
+log_path=$running_path/logs/$cur_path_last_dirname/rm
+
+
 accelerate launch src/train_bash.py \
     --stage rm \
     --model_name_or_path path_to_llama_model \
@@ -18,3 +30,10 @@ accelerate launch src/train_bash.py \
     --num_train_epochs 1.0 \
     --plot_loss \
     --fp16
+
+wait
+end_time=$(date +%s)
+e2e_time=$(( $end_time - $start_time ))
+
+# 打印端到端训练时间
+echo "E2E Training Duration sec : $e2e_time"
