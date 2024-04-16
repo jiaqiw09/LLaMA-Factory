@@ -1,56 +1,38 @@
-import os
 import json
+import os
 import time
-from typing import TYPE_CHECKING
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from transformers import TrainerCallback
-from transformers.modeling_utils import custom_object_save, unwrap_model
-from transformers.trainer_utils import has_length, PREFIX_CHECKPOINT_DIR
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, has_length
 
-from llmtuner.extras.constants import LOG_FILE_NAME
-from llmtuner.extras.logging import get_logger
+from .constants import LOG_FILE_NAME
+from .logging import get_logger
+from .misc import fix_valuehead_checkpoint
+
 
 if TYPE_CHECKING:
-    from transformers import TrainingArguments, TrainerState, TrainerControl
-    from trl import AutoModelForCausalLMWithValueHead
+    from transformers import TrainerControl, TrainerState, TrainingArguments
 
 
 logger = get_logger(__name__)
 
 
-def _save_model_with_valuehead(model: "AutoModelForCausalLMWithValueHead", output_dir: str) -> None:
-    model.pretrained_model.config.save_pretrained(output_dir)
-    if model.pretrained_model.can_generate():
-        model.pretrained_model.generation_config.save_pretrained(output_dir)
-    if getattr(model, "is_peft_model", False):
-        model.pretrained_model.save_pretrained(output_dir)
-    elif getattr(model.pretrained_model, "_auto_class", None): # must not a peft model
-        custom_object_save(model.pretrained_model, output_dir, config=model.pretrained_model.config)
-
-
-class SavePeftModelCallback(TrainerCallback):
-
+class FixValueHeadModelCallback(TrainerCallback):
     def on_save(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
         r"""
         Event called after a checkpoint save.
         """
         if args.should_save:
-            _save_model_with_valuehead(
-                model=unwrap_model(kwargs.pop("model")),
-                output_dir=os.path.join(args.output_dir, "{}-{}".format(PREFIX_CHECKPOINT_DIR, state.global_step))
+            fix_valuehead_checkpoint(
+                model=kwargs.pop("model"),
+                output_dir=os.path.join(args.output_dir, "{}-{}".format(PREFIX_CHECKPOINT_DIR, state.global_step)),
+                safe_serialization=args.save_safetensors,
             )
-
-    def on_train_end(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
-        r"""
-        Event called at the end of training.
-        """
-        if args.should_save:
-            _save_model_with_valuehead(model=unwrap_model(kwargs.pop("model")), output_dir=args.output_dir)
 
 
 class LogCallback(TrainerCallback):
-
     def __init__(self, runner=None):
         self.runner = runner
         self.in_training = False
@@ -76,9 +58,17 @@ class LogCallback(TrainerCallback):
             self.in_training = True
             self.start_time = time.time()
             self.max_steps = state.max_steps
-            if os.path.exists(os.path.join(args.output_dir, LOG_FILE_NAME)) and args.overwrite_output_dir:
-                logger.warning("Previous log file in this folder will be deleted.")
-                os.remove(os.path.join(args.output_dir, LOG_FILE_NAME))
+
+        if args.save_on_each_node:
+            if not state.is_local_process_zero:
+                return
+        else:
+            if not state.is_world_process_zero:
+                return
+
+        if os.path.exists(os.path.join(args.output_dir, LOG_FILE_NAME)) and args.overwrite_output_dir:
+            logger.warning("Previous log file in this folder will be deleted.")
+            os.remove(os.path.join(args.output_dir, LOG_FILE_NAME))
 
     def on_train_end(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
         r"""
@@ -116,7 +106,9 @@ class LogCallback(TrainerCallback):
             self.cur_steps = 0
             self.max_steps = 0
 
-    def on_predict(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", *other, **kwargs):
+    def on_predict(
+        self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", *other, **kwargs
+    ):
         r"""
         Event called after a successful prediction.
         """
@@ -128,8 +120,12 @@ class LogCallback(TrainerCallback):
         r"""
         Event called after logging the last logs.
         """
-        if not state.is_local_process_zero:
-            return
+        if args.save_on_each_node:
+            if not state.is_local_process_zero:
+                return
+        else:
+            if not state.is_world_process_zero:
+                return
 
         logs = dict(
             current_steps=self.cur_steps,
@@ -138,22 +134,27 @@ class LogCallback(TrainerCallback):
             eval_loss=state.log_history[-1].get("eval_loss", None),
             predict_loss=state.log_history[-1].get("predict_loss", None),
             reward=state.log_history[-1].get("reward", None),
+            accuracy=state.log_history[-1].get("rewards/accuracies", None),
             learning_rate=state.log_history[-1].get("learning_rate", None),
             epoch=state.log_history[-1].get("epoch", None),
             percentage=round(self.cur_steps / self.max_steps * 100, 2) if self.max_steps != 0 else 100,
             elapsed_time=self.elapsed_time,
-            remaining_time=self.remaining_time
+            remaining_time=self.remaining_time,
         )
         if self.runner is not None:
-            logger.info("{{'loss': {:.4f}, 'learning_rate': {:2.4e}, 'epoch': {:.2f}}}".format(
-                logs["loss"] or 0, logs["learning_rate"] or 0, logs["epoch"] or 0
-            ))
+            logger.info(
+                "{{'loss': {:.4f}, 'learning_rate': {:2.4e}, 'epoch': {:.2f}}}".format(
+                    logs["loss"] or 0, logs["learning_rate"] or 0, logs["epoch"] or 0
+                )
+            )
 
         os.makedirs(args.output_dir, exist_ok=True)
         with open(os.path.join(args.output_dir, "trainer_log.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(logs) + "\n")
 
-    def on_prediction_step(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
+    def on_prediction_step(
+        self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs
+    ):
         r"""
         Event called after a prediction step.
         """

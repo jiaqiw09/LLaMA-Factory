@@ -1,62 +1,94 @@
 import time
-from enum import Enum
+from enum import Enum, unique
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing_extensions import Literal
 
 
+@unique
 class Role(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    FUNCTION = "function"
+    TOOL = "tool"
 
 
+@unique
 class Finish(str, Enum):
     STOP = "stop"
     LENGTH = "length"
+    TOOL = "tool_calls"
 
 
 class ModelCard(BaseModel):
     id: str
-    object: Optional[str] = "model"
-    created: Optional[int] = Field(default_factory=lambda: int(time.time()))
-    owned_by: Optional[str] = "owner"
+    object: Literal["model"] = "model"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    owned_by: Literal["owner"] = "owner"
 
 
 class ModelList(BaseModel):
-    object: Optional[str] = "list"
-    data: Optional[List[ModelCard]] = []
+    object: Literal["list"] = "list"
+    data: List[ModelCard] = []
+
+
+class Function(BaseModel):
+    name: str
+    arguments: str
+
+
+class FunctionDefinition(BaseModel):
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+
+
+class FunctionAvailable(BaseModel):
+    type: Literal["function", "code_interpreter"] = "function"
+    function: Optional[FunctionDefinition] = None
+
+
+class FunctionCall(BaseModel):
+    id: Literal["call_default"] = "call_default"
+    type: Literal["function"] = "function"
+    function: Function
 
 
 class ChatMessage(BaseModel):
     role: Role
-    content: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[FunctionCall]] = None
 
 
-class DeltaMessage(BaseModel):
+class ChatCompletionMessage(BaseModel):
     role: Optional[Role] = None
     content: Optional[str] = None
+    tool_calls: Optional[List[FunctionCall]] = None
 
 
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
-    do_sample: Optional[bool] = True
+    tools: Optional[List[FunctionAvailable]] = None
+    do_sample: bool = True
     temperature: Optional[float] = None
     top_p: Optional[float] = None
-    n: Optional[int] = 1
+    n: int = 1
     max_tokens: Optional[int] = None
-    stream: Optional[bool] = False
+    stream: bool = False
 
 
 class ChatCompletionResponseChoice(BaseModel):
     index: int
-    message: ChatMessage
+    message: ChatCompletionMessage
     finish_reason: Finish
 
 
 class ChatCompletionResponseStreamChoice(BaseModel):
     index: int
-    delta: DeltaMessage
+    delta: ChatCompletionMessage
     finish_reason: Optional[Finish] = None
 
 
@@ -67,18 +99,18 @@ class ChatCompletionResponseUsage(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
-    id: Optional[str] = "chatcmpl-default"
-    object: Optional[str] = "chat.completion"
-    created: Optional[int] = Field(default_factory=lambda: int(time.time()))
+    id: Literal["chatcmpl-default"] = "chatcmpl-default"
+    object: Literal["chat.completion"] = "chat.completion"
+    created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[ChatCompletionResponseChoice]
     usage: ChatCompletionResponseUsage
 
 
 class ChatCompletionStreamResponse(BaseModel):
-    id: Optional[str] = "chatcmpl-default"
-    object: Optional[str] = "chat.completion.chunk"
-    created: Optional[int] = Field(default_factory=lambda: int(time.time()))
+    id: Literal["chatcmpl-default"] = "chatcmpl-default"
+    object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
+    created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[ChatCompletionResponseStreamChoice]
 
@@ -90,7 +122,7 @@ class ScoreEvaluationRequest(BaseModel):
 
 
 class ScoreEvaluationResponse(BaseModel):
-    id: Optional[str] = "scoreeval-default"
-    object: Optional[str] = "score.evaluation"
+    id: Literal["scoreeval-default"] = "scoreeval-default"
+    object: Literal["score.evaluation"] = "score.evaluation"
     model: str
     scores: List[float]
