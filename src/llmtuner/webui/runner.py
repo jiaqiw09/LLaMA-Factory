@@ -4,9 +4,7 @@ import time
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Dict, Generator
 
-import gradio as gr
 import transformers
-from gradio.components import Component  # cannot use TYPE_CHECKING here
 from transformers.trainer import TRAINING_ARGS_NAME
 from transformers.utils import is_torch_cuda_available
 
@@ -14,13 +12,20 @@ from ..extras.callbacks import LogCallback
 from ..extras.constants import TRAINING_STAGES
 from ..extras.logging import LoggerHandler
 from ..extras.misc import get_device_count, torch_gc
+from ..extras.packages import is_gradio_available
 from ..train import run_exp
 from .common import get_module, get_save_dir, load_args, load_config, save_args
 from .locales import ALERTS
 from .utils import gen_cmd, gen_plot, get_eval_results, update_process_bar
 
 
+if is_gradio_available():
+    import gradio as gr
+
+
 if TYPE_CHECKING:
+    from gradio.components import Component
+
     from .manager import Manager
 
 
@@ -62,7 +67,7 @@ class Runner:
         if not model_path:
             return ALERTS["err_no_path"][lang]
 
-        if len(dataset) == 0:
+        if not dataset:
             return ALERTS["err_no_dataset"][lang]
 
         if not from_preview and self.demo_mode:
@@ -117,8 +122,9 @@ class Runner:
             quantization_bit=int(get("top.quantization_bit")) if get("top.quantization_bit") in ["8", "4"] else None,
             template=get("top.template"),
             rope_scaling=get("top.rope_scaling") if get("top.rope_scaling") in ["linear", "dynamic"] else None,
-            flash_attn=(get("top.booster") == "flashattn"),
+            flash_attn="fa2" if get("top.booster") == "flashattn2" else "auto",
             use_unsloth=(get("top.booster") == "unsloth"),
+            visual_inputs=get("top.visual_inputs"),
             dataset_dir=get("train.dataset_dir"),
             dataset=",".join(get("train.dataset")),
             cutoff_len=get("train.cutoff_len"),
@@ -217,8 +223,9 @@ class Runner:
             quantization_bit=int(get("top.quantization_bit")) if get("top.quantization_bit") in ["8", "4"] else None,
             template=get("top.template"),
             rope_scaling=get("top.rope_scaling") if get("top.rope_scaling") in ["linear", "dynamic"] else None,
-            flash_attn=(get("top.booster") == "flashattn"),
+            flash_attn="fa2" if get("top.booster") == "flashattn2" else "auto",
             use_unsloth=(get("top.booster") == "unsloth"),
+            visual_inputs=get("top.visual_inputs"),
             dataset_dir=get("eval.dataset_dir"),
             dataset=",".join(get("eval.dataset")),
             cutoff_len=get("eval.cutoff_len"),
@@ -239,7 +246,7 @@ class Runner:
 
         return args
 
-    def _preview(self, data: Dict["Component", Any], do_train: bool) -> Generator[Dict[Component, str], None, None]:
+    def _preview(self, data: Dict["Component", Any], do_train: bool) -> Generator[Dict["Component", str], None, None]:
         output_box = self.manager.get_elem_by_id("{}.output_box".format("train" if do_train else "eval"))
         error = self._initialize(data, do_train, from_preview=True)
         if error:
@@ -249,7 +256,7 @@ class Runner:
             args = self._parse_train_args(data) if do_train else self._parse_eval_args(data)
             yield {output_box: gen_cmd(args)}
 
-    def _launch(self, data: Dict["Component", Any], do_train: bool) -> Generator[Dict[Component, Any], None, None]:
+    def _launch(self, data: Dict["Component", Any], do_train: bool) -> Generator[Dict["Component", Any], None, None]:
         output_box = self.manager.get_elem_by_id("{}.output_box".format("train" if do_train else "eval"))
         error = self._initialize(data, do_train, from_preview=False)
         if error:
@@ -263,19 +270,19 @@ class Runner:
             self.thread.start()
             yield from self.monitor()
 
-    def preview_train(self, data: Dict[Component, Any]) -> Generator[Dict[Component, str], None, None]:
+    def preview_train(self, data):
         yield from self._preview(data, do_train=True)
 
-    def preview_eval(self, data: Dict[Component, Any]) -> Generator[Dict[Component, str], None, None]:
+    def preview_eval(self, data):
         yield from self._preview(data, do_train=False)
 
-    def run_train(self, data: Dict[Component, Any]) -> Generator[Dict[Component, Any], None, None]:
+    def run_train(self, data):
         yield from self._launch(data, do_train=True)
 
-    def run_eval(self, data: Dict[Component, Any]) -> Generator[Dict[Component, Any], None, None]:
+    def run_eval(self, data):
         yield from self._launch(data, do_train=False)
 
-    def monitor(self) -> Generator[Dict[Component, Any], None, None]:
+    def monitor(self):
         get = lambda elem_id: self.running_data[self.manager.get_elem_by_id(elem_id)]
         self.aborted = False
         self.running = True
@@ -332,7 +339,7 @@ class Runner:
 
         yield return_dict
 
-    def save_args(self, data: Dict[Component, Any]) -> Dict[Component, str]:
+    def save_args(self, data):
         output_box = self.manager.get_elem_by_id("train.output_box")
         error = self._initialize(data, do_train=True, from_preview=True)
         if error:
@@ -351,7 +358,7 @@ class Runner:
         save_path = save_args(config_path, config_dict)
         return {output_box: ALERTS["info_config_saved"][lang] + save_path}
 
-    def load_args(self, lang: str, config_path: str) -> Dict[Component, Any]:
+    def load_args(self, lang: str, config_path: str):
         output_box = self.manager.get_elem_by_id("train.output_box")
         config_dict = load_args(config_path)
         if config_dict is None:

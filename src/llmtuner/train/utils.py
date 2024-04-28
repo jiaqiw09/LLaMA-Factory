@@ -61,6 +61,9 @@ def create_modelcard_and_push(
     if data_args.dataset is not None:
         kwargs["dataset"] = [dataset.strip() for dataset in data_args.dataset.split(",")]
 
+    if model_args.use_unsloth:
+        kwargs["tags"] = kwargs["tags"] + ["unsloth"]
+
     if not training_args.do_train:
         pass
     elif training_args.push_to_hub:
@@ -88,7 +91,7 @@ def create_ref_model(
         )
         ref_model_args = ModelArguments(**ref_model_args_dict)
         ref_finetuning_args = FinetuningArguments(finetuning_type="lora")
-        tokenizer = load_tokenizer(ref_model_args)
+        tokenizer = load_tokenizer(ref_model_args)["tokenizer"]
         ref_model = load_model(
             tokenizer, ref_model_args, ref_finetuning_args, is_trainable=False, add_valuehead=add_valuehead
         )
@@ -97,7 +100,7 @@ def create_ref_model(
         if finetuning_args.finetuning_type == "lora":
             ref_model = None
         else:
-            tokenizer = load_tokenizer(model_args)
+            tokenizer = load_tokenizer(model_args)["tokenizer"]
             ref_model = load_model(
                 tokenizer, model_args, finetuning_args, is_trainable=False, add_valuehead=add_valuehead
             )
@@ -144,7 +147,7 @@ def create_reward_model(
         )
         reward_model_args = ModelArguments(**reward_model_args_dict)
         reward_finetuning_args = FinetuningArguments(finetuning_type="lora")
-        tokenizer = load_tokenizer(reward_model_args)
+        tokenizer = load_tokenizer(reward_model_args)["tokenizer"]
         reward_model = load_model(
             tokenizer, reward_model_args, reward_finetuning_args, is_trainable=False, add_valuehead=True
         )
@@ -160,15 +163,6 @@ def _get_decay_parameter_names(model: "PreTrainedModel") -> List[str]:
     decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
     decay_parameters = [name for name in decay_parameters if "bias" not in name]
     return decay_parameters
-
-
-def _get_embedding_names(model: "PreTrainedModel") -> List[str]:
-    r"""
-    Returns a list of names of parameters in embedding.
-    """
-    result = {name for name, _ in model.get_input_embeddings().named_parameters()}
-    result.update(name for name, _ in model.get_output_embeddings().named_parameters())
-    return result
 
 
 def _create_galore_optimizer(
@@ -225,7 +219,7 @@ def _create_galore_optimizer(
 
         optimizer_dict: Dict["torch.Tensor", "torch.optim.Optimizer"] = {}
         for param in nodecay_params:
-            param_groups = [dict(params=[param])]
+            param_groups = [dict(params=[param], weight_decay=0.0)]
             optimizer_dict[param] = optim_class(param_groups, **optim_kwargs)
         for param in decay_params:
             param_groups = [dict(params=[param], weight_decay=training_args.weight_decay)]
@@ -260,11 +254,9 @@ def _create_loraplus_optimizer(
     training_args: "Seq2SeqTrainingArguments",
     finetuning_args: "FinetuningArguments",
 ) -> "torch.optim.Optimizer":
-    if finetuning_args.finetuning_type != "lora":
-        raise ValueError("You should use LoRA tuning to activate LoRA+.")
-
+    default_lr = training_args.learning_rate
     loraplus_lr = training_args.learning_rate * finetuning_args.loraplus_lr_ratio
-    decay_args = {"weight_decay": training_args.weight_decay}
+    embedding_lr = finetuning_args.loraplus_lr_embedding
 
     decay_param_names = _get_decay_parameter_names(model)
     param_dict: Dict[str, List["torch.nn.Parameter"]] = {
@@ -287,10 +279,10 @@ def _create_loraplus_optimizer(
 
     optim_class, optim_kwargs = Trainer.get_optimizer_cls_and_kwargs(training_args)
     param_groups = [
-        dict(params=param_dict["lora_a"], **decay_args),
-        dict(params=param_dict["lora_b"], lr=loraplus_lr, **decay_args),
+        dict(params=param_dict["lora_a"], lr=default_lr, weight_decay=training_args.weight_decay),
+        dict(params=param_dict["lora_b"], lr=loraplus_lr, weight_decay=training_args.weight_decay),
         dict(params=param_dict["lora_b_nodecay"], lr=loraplus_lr, weight_decay=0.0),
-        dict(params=param_dict["embedding"], lr=finetuning_args.loraplus_lr_embedding, **decay_args),
+        dict(params=param_dict["embedding"], lr=embedding_lr, weight_decay=training_args.weight_decay),
     ]
     optimizer = optim_class(param_groups, **optim_kwargs)
     logger.info("Using LoRA+ optimizer with loraplus lr ratio {:.2f}.".format(finetuning_args.loraplus_lr_ratio))
@@ -302,11 +294,8 @@ def _create_badam_optimizer(
     training_args: "Seq2SeqTrainingArguments",
     finetuning_args: "FinetuningArguments",
 ) -> "torch.optim.Optimizer":
-    decay_param_names = _get_decay_parameter_names(model)
-    if finetuning_args.badam_mode == "ratio":  # filter out the embedding layers for ratio-wise badam
-        decay_param_names = [name for name in decay_param_names if name not in _get_embedding_names(model)]
-
     decay_params, nodecay_params = [], []
+    decay_param_names = _get_decay_parameter_names(model)
     for name, param in model.named_parameters():
         if param.requires_grad:
             if name in decay_param_names:
@@ -349,6 +338,7 @@ def _create_badam_optimizer(
             update_ratio=finetuning_args.badam_update_ratio,
             mask_mode=finetuning_args.badam_mask_mode,
             verbose=finetuning_args.badam_verbose,
+            include_embedding=False,
             **optim_kwargs,
         )
         logger.info(
@@ -387,13 +377,12 @@ def create_custom_scheduler(
             scheduler_dict[param] = get_scheduler(
                 training_args.lr_scheduler_type,
                 optimizer=optimizer_dict[param],
-                num_warmup_steps=training_args.get_warmup_steps(num_training_steps) * 2,
-                num_training_steps=num_training_steps * 2,
+                num_warmup_steps=training_args.get_warmup_steps(num_training_steps),
+                num_training_steps=num_training_steps,
             )
 
         def scheduler_hook(param: "torch.nn.Parameter"):
-            if param.grad is not None:
-                scheduler_dict[param].step()
+            scheduler_dict[param].step()
 
         for param in optimizer_dict.keys():
             param.register_post_accumulate_grad_hook(scheduler_hook)

@@ -1,11 +1,15 @@
 from typing import TYPE_CHECKING, Dict
 
-import gradio as gr
 from transformers.trainer_utils import SchedulerType
 
 from ...extras.constants import TRAINING_STAGES
+from ...extras.packages import is_gradio_available
 from ..common import DEFAULT_DATA_DIR, autoset_packing, list_adapters, list_dataset
 from ..components.data import create_preview_box
+
+
+if is_gradio_available():
+    import gradio as gr
 
 
 if TYPE_CHECKING:
@@ -23,7 +27,7 @@ def create_train_tab(engine: "Engine") -> Dict[str, "Component"]:
             choices=list(TRAINING_STAGES.keys()), value=list(TRAINING_STAGES.keys())[0], scale=1
         )
         dataset_dir = gr.Textbox(value=DEFAULT_DATA_DIR, scale=1)
-        dataset = gr.Dropdown(multiselect=True, allow_custom_value=True, scale=4)
+        dataset = gr.Dropdown(multiselect=True, scale=4)
         preview_elems = create_preview_box(dataset_dir, dataset)
 
     input_elems.update({training_stage, dataset_dir, dataset})
@@ -134,7 +138,7 @@ def create_train_tab(engine: "Engine") -> Dict[str, "Component"]:
         with gr.Row():
             lora_rank = gr.Slider(value=8, minimum=1, maximum=1024, step=1)
             lora_alpha = gr.Slider(value=16, minimum=1, maximum=2048, step=1)
-            lora_dropout = gr.Slider(value=0.1, minimum=0, maximum=1, step=0.01)
+            lora_dropout = gr.Slider(value=0, minimum=0, maximum=1, step=0.01)
             loraplus_lr_ratio = gr.Slider(value=0, minimum=0, maximum=64, step=0.01)
             create_new_adapter = gr.Checkbox()
 

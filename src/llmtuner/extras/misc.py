@@ -66,7 +66,6 @@ def check_dependencies() -> None:
         require_version("accelerate>=0.27.2", "To fix: pip install accelerate>=0.27.2")
         require_version("peft>=0.10.0", "To fix: pip install peft>=0.10.0")
         require_version("trl>=0.8.1", "To fix: pip install trl>=0.8.1")
-        require_version("gradio>=4.0.0", "To fix: pip install gradio>=4.0.0")
 
 
 def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
@@ -84,6 +83,8 @@ def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
         if param.__class__.__name__ == "Params4bit":
             if hasattr(param, "quant_storage") and hasattr(param.quant_storage, "itemsize"):
                 num_bytes = param.quant_storage.itemsize
+            elif hasattr(param, "element_size"):  # for older pytorch version
+                num_bytes = param.element_size()
             else:
                 num_bytes = 1
 
