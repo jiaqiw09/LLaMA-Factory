@@ -34,6 +34,7 @@ from typing_extensions import override
 
 from ..extras import logging
 from ..extras.constants import IGNORE_INDEX, SWANLAB_CONFIG
+from ..extras.misc import get_ray_setting
 from ..extras.packages import is_apollo_available, is_galore_available, is_ray_available
 from ..hparams import FinetuningArguments, ModelArguments
 from ..model import find_all_linear_modules, load_model, load_tokenizer, load_valuehead_params
@@ -761,14 +762,17 @@ def get_ray_trainer(
     else:
         storage_path = Path(ray_args.ray_storage_path).absolute().as_posix()
 
+    use_gpu, torch_backend = get_ray_setting()
+
     trainer = TorchTrainer(
         training_function,
+        torch_config=ray.train.torch.TorchConfig(backend=torch_backend),
         train_loop_config=train_loop_config,
         scaling_config=ScalingConfig(
             num_workers=ray_args.ray_num_workers,
             resources_per_worker=ray_args.resources_per_worker,
             placement_strategy=ray_args.placement_strategy,
-            use_gpu=True,
+            use_gpu=use_gpu,
         ),
         run_config=RunConfig(
             name=ray_args.ray_run_name,

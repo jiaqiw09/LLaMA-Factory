@@ -332,3 +332,15 @@ def fix_proxy(ipv6_enabled: bool = False) -> None:
     if ipv6_enabled:
         os.environ.pop("http_proxy", None)
         os.environ.pop("HTTP_PROXY", None)
+
+def get_ray_setting() -> tuple[bool, str]:
+    r"""Get the Ray trainer settings based on the available device."""
+    if is_torch_npu_available():
+        use_gpu = False
+        torch_backend = "hccl"
+        logger.info_rank0("Ray trainer configured for NPU with HCCL backend")
+    else:
+        use_gpu = True
+        torch_backend = "nccl"
+        logger.info_rank0("Ray trainer configured for GPU with NCCL backend")
+    return use_gpu, torch_backend
