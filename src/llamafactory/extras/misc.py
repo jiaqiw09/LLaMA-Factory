@@ -313,6 +313,14 @@ def use_ray() -> bool:
     return is_env_enabled("USE_RAY")
 
 
+def use_ray_remote() -> bool:
+    r"""
+    Check if ray.remote mode is enabled.
+    When USE_RAY_REMOTE=1, training will use ray.remote instead of TorchTrainer.
+    """
+    return is_env_enabled("USE_RAY_REMOTE")
+
+
 def use_kt() -> bool:
     return is_env_enabled("USE_KT")
 

@@ -23,7 +23,7 @@ from transformers import EarlyStoppingCallback, PreTrainedModel
 from ..data import get_template_and_fix_tokenizer
 from ..extras import logging
 from ..extras.constants import V_HEAD_SAFE_WEIGHTS_NAME, V_HEAD_WEIGHTS_NAME
-from ..extras.misc import infer_optim_dtype
+from ..extras.misc import infer_optim_dtype, use_ray_remote
 from ..extras.packages import is_mcore_adapter_available, is_ray_available
 from ..hparams import get_infer_args, get_ray_args, get_train_args, read_args
 from ..model import load_model, load_tokenizer
@@ -120,14 +120,25 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
 
     ray_args = get_ray_args(args)
     callbacks = callbacks or []
+    
     if ray_args.use_ray:
-        callbacks.append(RayTrainReportCallback())
-        trainer = get_ray_trainer(
-            training_function=_training_function,
-            train_loop_config={"args": args, "callbacks": callbacks},
-            ray_args=ray_args,
-        )
-        trainer.fit()
+        # Use ray.remote mode: wrap _training_function with ray.remote
+        logger.info("Using ray.remote mode (USE_RAY_REMOTE=1)")
+        from .trainer_utils import get_ray_remote_config
+            
+        # Get ray.remote configuration
+        remote_config = get_ray_remote_config(ray_args)
+            
+        # Create remote version of _training_function
+        remote_training_func = ray.remote(**remote_config)(_training_function)
+            
+        # Launch remote task
+        logger.info(f"Launching training with ray.remote: {remote_config}")
+        future = remote_training_func.remote(config={"args": args, "callbacks": callbacks})
+            
+        # Wait for completion
+        ray.get(future)
+        logger.info("Training with ray.remote completed successfully")
     else:
         _training_function(config={"args": args, "callbacks": callbacks})
 

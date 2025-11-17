@@ -749,6 +749,9 @@ def get_ray_trainer(
     train_loop_config: dict[str, Any],
     ray_args: "RayArguments",
 ) -> "TorchTrainer":
+    r"""Create a TorchTrainer for Ray training. Supports GPU and NPU."""
+    from ..extras.packages import is_transformers_available
+
     if not ray_args.use_ray:
         raise ValueError("Ray was not enabled. Please set `USE_RAY=1` to enable ray.")
 
@@ -756,10 +759,19 @@ def get_ray_trainer(
         ray.init(**ray_args.ray_init_kwargs)
 
     if ray_args.ray_storage_filesystem is not None:
-        # this means we are using s3/gcs
         storage_path = ray_args.ray_storage_path
     else:
         storage_path = Path(ray_args.ray_storage_path).absolute().as_posix()
+
+    # Detect if GPU or NPU is specified or available
+    use_accelerator = False
+    if isinstance(ray_args.resources_per_worker, dict):
+        if "GPU" in ray_args.resources_per_worker or "NPU" in ray_args.resources_per_worker:
+            use_accelerator = True
+    elif is_transformers_available():
+        from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
+        use_accelerator = is_torch_cuda_available() or is_torch_npu_available()
 
     trainer = TorchTrainer(
         training_function,
@@ -768,7 +780,7 @@ def get_ray_trainer(
             num_workers=ray_args.ray_num_workers,
             resources_per_worker=ray_args.resources_per_worker,
             placement_strategy=ray_args.placement_strategy,
-            use_gpu=True,
+            use_gpu=use_accelerator,
         ),
         run_config=RunConfig(
             name=ray_args.ray_run_name,
@@ -777,3 +789,56 @@ def get_ray_trainer(
         ),
     )
     return trainer
+
+
+def get_ray_remote_config(ray_args: "RayArguments") -> dict[str, Any]:
+    r"""
+    Get ray.remote configuration from RayArguments. Supports GPU and NPU.
+
+    Args:
+        ray_args: RayArguments containing ray configuration
+
+    Returns:
+        A dictionary with ray.remote configuration (num_gpus, num_cpus, resources, etc.)
+    """
+    from ..extras.packages import is_transformers_available
+
+    if not ray_args.use_ray:
+        raise ValueError("Ray was not enabled. Please set `USE_RAY=1` to enable ray.")
+
+    # Initialize ray if not already done
+    if not ray.is_initialized():
+        if ray_args.ray_init_kwargs is not None:
+            ray.init(**ray_args.ray_init_kwargs)
+        else:
+            ray.init(address="auto", ignore_reinit_error=True)
+
+    # Extract resource configuration
+    remote_config = {}
+
+    if isinstance(ray_args.resources_per_worker, dict):
+        # GPU uses num_gpus
+        if "GPU" in ray_args.resources_per_worker:
+            remote_config["num_gpus"] = ray_args.resources_per_worker["GPU"]
+        
+        # CPU
+        if "CPU" in ray_args.resources_per_worker:
+            remote_config["num_cpus"] = ray_args.resources_per_worker["CPU"]
+
+        # NPU uses custom resources
+        if "NPU" in ray_args.resources_per_worker:
+            remote_config["resources"] = {"NPU": ray_args.resources_per_worker["NPU"]}
+
+    # Auto-detect device if no explicit configuration
+    if "num_gpus" not in remote_config and "resources" not in remote_config:
+        if is_transformers_available():
+            from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
+            if is_torch_npu_available():
+                remote_config["resources"] = {"NPU": 1}
+                logger.info_rank0("Auto-detected NPU, using resources={'NPU': 1}")
+            elif is_torch_cuda_available():
+                remote_config["num_gpus"] = 1
+                logger.info_rank0("Auto-detected CUDA GPU, using num_gpus=1")
+
+    return remote_config
