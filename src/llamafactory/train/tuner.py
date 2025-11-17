@@ -122,8 +122,9 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
     callbacks = callbacks or []
     
     if ray_args.use_ray:
-        num_workers = ray_args.ray_num_workers
-        
+        # num_workers = ray_args.ray_num_workers
+        num_workers = 8
+
         if num_workers > 1:
             # Multi-worker distributed training mode
             logger.info(f"Using ray.remote mode with {num_workers} workers for distributed training")
@@ -134,12 +135,38 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
                 if ray_args.ray_init_kwargs is not None:
                     ray.init(**ray_args.ray_init_kwargs)
                 else:
-                    ray.init(address="auto", ignore_reinit_error=True)
+                    ray.init()
             
             # 2. Create placement group for resource management
             pg = create_placement_group_for_training(ray_args)
             
-            # 3. Launch workers
+            # 3. Create wrapper function for device setup (verl-style)
+            def _training_function_with_device_setup(config: dict[str, Any]) -> None:
+                import os
+                
+                # Set NPU/GPU device using LOCAL_RANK (verl-style)
+                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                rank = int(os.environ.get("RANK", "0"))
+                
+                logger.info(f"Worker {rank} (PID={os.getpid()}): LOCAL_RANK={local_rank}")
+                
+                try:
+                    import torch
+                    from transformers.utils import is_torch_npu_available, is_torch_cuda_available
+                    
+                    if is_torch_npu_available():
+                        torch.npu.set_device(local_rank)
+                        logger.info(f"Worker {rank}: Set NPU device to {local_rank}")
+                    elif is_torch_cuda_available():
+                        torch.cuda.set_device(local_rank)
+                        logger.info(f"Worker {rank}: Set CUDA device to {local_rank}")
+                except Exception as e:
+                    logger.warning(f"Worker {rank}: Failed to set device: {e}")
+                
+                # Call original training function
+                _training_function(config)
+            
+            # 4. Launch workers
             futures = []
             for rank in range(num_workers):
                 # Get worker-specific configuration
@@ -153,16 +180,16 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
                     master_port="29500",
                 )
                 
-                # Create remote function for this worker
-                remote_training_func = ray.remote(**remote_config)(_training_function)
+                # Create remote function with device setup wrapper
+                remote_training_func = ray.remote(**remote_config)(_training_function_with_device_setup)
                 
                 # Launch worker
                 future = remote_training_func.remote(config={"args": args, "callbacks": callbacks})
                 futures.append(future)
                 
-                logger.info(f"Launched worker {rank}/{num_workers} with config: {remote_config}")
+                logger.info(f"Launched worker {rank}/{num_workers}")
             
-            # 4. Wait for all workers to complete
+            # 5. Wait for all workers to complete
             logger.info(f"Waiting for {num_workers} workers to complete...")
             ray.get(futures)
             logger.info(f"All {num_workers} workers completed successfully")
