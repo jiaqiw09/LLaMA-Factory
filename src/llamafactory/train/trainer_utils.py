@@ -794,6 +794,7 @@ def get_ray_trainer(
 def get_ray_remote_config(ray_args: "RayArguments") -> dict[str, Any]:
     r"""
     Get ray.remote configuration from RayArguments. Supports GPU and NPU.
+    For single worker training.
 
     Args:
         ray_args: RayArguments containing ray configuration
@@ -840,5 +841,132 @@ def get_ray_remote_config(ray_args: "RayArguments") -> dict[str, Any]:
             elif is_torch_cuda_available():
                 remote_config["num_gpus"] = 1
                 logger.info_rank0("Auto-detected CUDA GPU, using num_gpus=1")
+
+    return remote_config
+
+
+def create_placement_group_for_training(ray_args: "RayArguments") -> Any:
+    r"""
+    Create Ray placement group for distributed training.
+    Each worker will be assigned to a separate bundle with dedicated resources.
+
+    Args:
+        ray_args: RayArguments containing ray configuration
+
+    Returns:
+        Ray placement group object
+    """
+    from ray.util.placement_group import placement_group
+
+    num_workers = ray_args.ray_num_workers
+
+    # Determine bundle resources
+    if isinstance(ray_args.resources_per_worker, dict):
+        bundle = ray_args.resources_per_worker.copy()
+    else:
+        # Auto-detect
+        from ..extras.packages import is_transformers_available
+
+        if is_transformers_available():
+            from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
+            if is_torch_npu_available():
+                bundle = {"NPU": 1, "CPU": 1}
+            elif is_torch_cuda_available():
+                bundle = {"GPU": 1, "CPU": 1}
+            else:
+                bundle = {"CPU": 1}
+        else:
+            bundle = {"CPU": 1}
+
+    # Create placement group: num_workers identical bundles
+    bundles = [bundle for _ in range(num_workers)]
+
+    pg = placement_group(bundles, strategy="STRICT_PACK")
+    ray.get(pg.ready())
+
+    logger.info_rank0(f"Created placement group with {num_workers} bundles: {bundle}")
+
+    return pg
+
+
+def get_ray_remote_config_for_worker(
+    ray_args: "RayArguments",
+    placement_group: Any,
+    bundle_idx: int,
+    rank: int,
+    world_size: int,
+    master_addr: str = "127.0.0.1",
+    master_port: str = "29500",
+) -> dict[str, Any]:
+    r"""
+    Get ray.remote config for a specific worker in distributed training.
+
+    Args:
+        ray_args: RayArguments containing ray configuration
+        placement_group: Ray placement group
+        bundle_idx: Index of the bundle to use (same as local_rank)
+        rank: Global rank of this worker
+        world_size: Total number of workers
+        master_addr: Master address for distributed training
+        master_port: Master port for distributed training
+
+    Returns:
+        A dictionary with ray.remote configuration for this worker
+    """
+    from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+
+    # Get resource configuration
+    if isinstance(ray_args.resources_per_worker, dict):
+        num_gpus = ray_args.resources_per_worker.get("GPU", 0)
+        num_cpus = ray_args.resources_per_worker.get("CPU", 1)
+        npu_count = ray_args.resources_per_worker.get("NPU", 0)
+    else:
+        # Auto-detect
+        from ..extras.packages import is_transformers_available
+
+        if is_transformers_available():
+            from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
+            if is_torch_npu_available():
+                num_gpus = 0
+                num_cpus = 1
+                npu_count = 1
+            elif is_torch_cuda_available():
+                num_gpus = 1
+                num_cpus = 1
+                npu_count = 0
+            else:
+                num_gpus = 0
+                num_cpus = 1
+                npu_count = 0
+        else:
+            num_gpus = 0
+            num_cpus = 1
+            npu_count = 0
+
+    remote_config = {
+        "num_cpus": num_cpus,
+        "scheduling_strategy": PlacementGroupSchedulingStrategy(
+            placement_group=placement_group,
+            placement_group_bundle_index=bundle_idx,
+        ),
+        # Inject distributed training environment variables
+        "runtime_env": {
+            "env_vars": {
+                "RANK": str(rank),
+                "LOCAL_RANK": str(bundle_idx),
+                "WORLD_SIZE": str(world_size),
+                "MASTER_ADDR": master_addr,
+                "MASTER_PORT": master_port,
+            }
+        },
+    }
+
+    # Add GPU/NPU resources
+    if num_gpus > 0:
+        remote_config["num_gpus"] = num_gpus
+    if npu_count > 0:
+        remote_config["resources"] = {"NPU": npu_count}
 
     return remote_config

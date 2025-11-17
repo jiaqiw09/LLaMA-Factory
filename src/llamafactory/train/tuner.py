@@ -122,23 +122,69 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
     callbacks = callbacks or []
     
     if ray_args.use_ray:
-        # Use ray.remote mode: wrap _training_function with ray.remote
-        logger.info("Using ray.remote mode (USE_RAY_REMOTE=1)")
-        from .trainer_utils import get_ray_remote_config
+        num_workers = ray_args.ray_num_workers
+        
+        if num_workers > 1:
+            # Multi-worker distributed training mode
+            logger.info(f"Using ray.remote mode with {num_workers} workers for distributed training")
+            from .trainer_utils import create_placement_group_for_training, get_ray_remote_config_for_worker
             
-        # Get ray.remote configuration
-        remote_config = get_ray_remote_config(ray_args)
+            # 1. Initialize Ray
+            if not ray.is_initialized():
+                if ray_args.ray_init_kwargs is not None:
+                    ray.init(**ray_args.ray_init_kwargs)
+                else:
+                    ray.init(address="auto", ignore_reinit_error=True)
             
-        # Create remote version of _training_function
-        remote_training_func = ray.remote(**remote_config)(_training_function)
+            # 2. Create placement group for resource management
+            pg = create_placement_group_for_training(ray_args)
             
-        # Launch remote task
-        logger.info(f"Launching training with ray.remote: {remote_config}")
-        future = remote_training_func.remote(config={"args": args, "callbacks": callbacks})
+            # 3. Launch workers
+            futures = []
+            for rank in range(num_workers):
+                # Get worker-specific configuration
+                remote_config = get_ray_remote_config_for_worker(
+                    ray_args=ray_args,
+                    placement_group=pg,
+                    bundle_idx=rank,
+                    rank=rank,
+                    world_size=num_workers,
+                    master_addr="127.0.0.1",
+                    master_port="29500",
+                )
+                
+                # Create remote function for this worker
+                remote_training_func = ray.remote(**remote_config)(_training_function)
+                
+                # Launch worker
+                future = remote_training_func.remote(config={"args": args, "callbacks": callbacks})
+                futures.append(future)
+                
+                logger.info(f"Launched worker {rank}/{num_workers} with config: {remote_config}")
             
-        # Wait for completion
-        ray.get(future)
-        logger.info("Training with ray.remote completed successfully")
+            # 4. Wait for all workers to complete
+            logger.info(f"Waiting for {num_workers} workers to complete...")
+            ray.get(futures)
+            logger.info(f"All {num_workers} workers completed successfully")
+            
+        else:
+            # Single worker mode
+            logger.info("Using ray.remote mode with single worker")
+            from .trainer_utils import get_ray_remote_config
+            
+            # Get ray.remote configuration
+            remote_config = get_ray_remote_config(ray_args)
+            
+            # Create remote version of _training_function
+            remote_training_func = ray.remote(**remote_config)(_training_function)
+            
+            # Launch remote task
+            logger.info(f"Launching training with ray.remote: {remote_config}")
+            future = remote_training_func.remote(config={"args": args, "callbacks": callbacks})
+            
+            # Wait for completion
+            ray.get(future)
+            logger.info("Training with ray.remote completed successfully")
     else:
         _training_function(config={"args": args, "callbacks": callbacks})
 
