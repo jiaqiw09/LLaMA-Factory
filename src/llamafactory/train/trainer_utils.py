@@ -860,24 +860,20 @@ def create_placement_group_for_training(ray_args: "RayArguments") -> Any:
     """
     from ray.util.placement_group import placement_group
 
-    num_workers = ray_args.ray_num_workers
+    num_workers = 8
 
     # Build bundle with CPU and NPU/GPU resources (verl-style)
-    if isinstance(ray_args.resources_per_worker, dict):
+    # if isinstance(ray_args.resources_per_worker, dict):
+    if False:
         bundle = ray_args.resources_per_worker.copy()
     else:
-        # Auto-detect
-        from ..extras.packages import is_transformers_available
-        
-        if is_transformers_available():
-            from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+        # Auto-detect        
+        from transformers.utils import is_torch_cuda_available, is_torch_npu_available
             
-            if is_torch_npu_available():
-                bundle = {"CPU": 1, "NPU": 1}
-            elif is_torch_cuda_available():
-                bundle = {"CPU": 1, "GPU": 1}
-            else:
-                bundle = {"CPU": 1}
+        if is_torch_npu_available():
+            bundle = {"CPU": 1, "NPU": 1}
+        elif is_torch_cuda_available():
+            bundle = {"CPU": 1, "GPU": 1}
         else:
             bundle = {"CPU": 1}
 
@@ -925,30 +921,29 @@ def get_ray_remote_config_for_worker(
     from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
     # Get resource configuration (verl-style: declare resources to Ray)
-    if isinstance(ray_args.resources_per_worker, dict):
+    # if isinstance(ray_args.resources_per_worker, dict):
+    if False:
         num_cpus = ray_args.resources_per_worker.get("CPU", 1)
         num_gpus = ray_args.resources_per_worker.get("GPU", 0)
         npu_count = ray_args.resources_per_worker.get("NPU", 0)
     else:
-        # Auto-detect
-        from ..extras.packages import is_transformers_available
-        
+        # Auto-detect        
         num_cpus = 1
         num_gpus = 0
         npu_count = 0
         
-        if is_transformers_available():
-            from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+        from transformers.utils import is_torch_cuda_available, is_torch_npu_available
             
-            if is_torch_npu_available():
-                npu_count = 1
-            elif is_torch_cuda_available():
-                num_gpus = 1
+        if is_torch_npu_available():
+            npu_count = 1
+        elif is_torch_cuda_available():
+            num_gpus = 1
 
-    # Build environment variables (only distributed training vars)
+    # Build environment variables for distributed training
+    # Note: Device visibility (ASCEND_RT_VISIBLE_DEVICES) is set directly in worker function
+    # not via runtime_env, as runtime_env doesn't reliably set these vars
     env_vars = {
         "RANK": str(rank),
-        "LOCAL_RANK": str(bundle_idx),
         "WORLD_SIZE": str(world_size),
         "MASTER_ADDR": master_addr,
         "MASTER_PORT": master_port,
@@ -966,6 +961,7 @@ def get_ray_remote_config_for_worker(
     }
     
     # Declare GPU/NPU resources to Ray (verl-style)
+    # Device visibility is handled manually in worker function
     if num_gpus > 0:
         remote_config["num_gpus"] = num_gpus
     if npu_count > 0:

@@ -144,24 +144,39 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
             def _training_function_with_device_setup(config: dict[str, Any]) -> None:
                 import os
                 
-                # Set NPU/GPU device using LOCAL_RANK (verl-style)
-                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                # Set device visibility BEFORE any imports (verl-style)
                 rank = int(os.environ.get("RANK", "0"))
+                os.environ["ASCEND_RT_VISIBLE_DEVICES"] = str(rank)
+                os.environ["LOCAL_RANK"] = "0"
                 
-                logger.info(f"Worker {rank} (PID={os.getpid()}): LOCAL_RANK={local_rank}")
+                logger.info(f"Worker {rank} (PID={os.getpid()}): Set ASCEND_RT_VISIBLE_DEVICES={rank}")
                 
+                # Verify NPU/GPU availability
                 try:
                     import torch
                     from transformers.utils import is_torch_npu_available, is_torch_cuda_available
                     
+                    logger.info(f"Worker {rank}: is_torch_npu_available={is_torch_npu_available()}")
+                    logger.info(f"Worker {rank}: is_torch_cuda_available={is_torch_cuda_available()}")
+                    
                     if is_torch_npu_available():
-                        torch.npu.set_device(local_rank)
-                        logger.info(f"Worker {rank}: Set NPU device to {local_rank}")
+                        import torch_npu
+                        npu_count = torch_npu.npu.device_count()
+                        logger.info(f"Worker {rank}: NPU device count={npu_count}")
+                        # Set device to 0 since each worker sees only one device
+                        torch.npu.set_device(0)
+                        logger.info(f"Worker {rank}: Set NPU device to 0")
                     elif is_torch_cuda_available():
-                        torch.cuda.set_device(local_rank)
-                        logger.info(f"Worker {rank}: Set CUDA device to {local_rank}")
+                        gpu_count = torch.cuda.device_count()
+                        logger.info(f"Worker {rank}: GPU device count={gpu_count}")
+                        torch.cuda.set_device(0)
+                        logger.info(f"Worker {rank}: Set CUDA device to 0")
+                    else:
+                        logger.warning(f"Worker {rank}: No NPU/GPU detected, using CPU")
                 except Exception as e:
-                    logger.warning(f"Worker {rank}: Failed to set device: {e}")
+                    logger.error(f"Worker {rank}: Failed to set device: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                 
                 # Call original training function
                 _training_function(config)
