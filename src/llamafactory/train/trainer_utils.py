@@ -545,6 +545,28 @@ def create_custom_optimizer(
     if finetuning_args.use_muon:
         return _create_muon_optimizer(model, training_args)
 
+    if finetuning_args.use_muon_clip:
+        return _create_muon_clip_optimizer(model, training_args)
+
+def _create_muon_clip_optimizer(
+    model: "PreTrainedModel",
+    training_args: "TrainingArguments",
+) -> "torch.optim.Optimizer":
+    from ..third_party.muon import MuonClip
+
+    optimizer = MuonClip(
+        params=filter(lambda p: p.requires_grad, model.parameters()),
+        lr=training_args.learning_rate,
+        weight_decay=training_args.weight_decay,
+        adamw_betas=(training_args.adam_beta1, training_args.adam_beta2),
+        eps=training_args.adam_epsilon,
+    )
+    if hasattr(optimizer, "set_model"):
+        optimizer.set_model(model)
+
+    logger.info_rank0("Using MuonClip optimizer.")
+    return optimizer
+
 
 def create_custom_scheduler(
     training_args: "TrainingArguments",

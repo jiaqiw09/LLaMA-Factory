@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .muon import Muon
+from .muon_clip import MuonClip
 
 
-__all__ = ["Muon"]
+__all__ = ["Muon","MuonClip"]

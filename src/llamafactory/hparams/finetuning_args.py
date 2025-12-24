@@ -486,6 +486,10 @@ class FinetuningArguments(
         default=False,
         metadata={"help": "Whether or not to use the Muon optimizer."},
     )
+    use_muon_clip: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to use the Muon optimizer."},
+    )
     use_dft_loss: bool = field(
         default=False,
         metadata={"help": "Whether to use the DFT loss."},
