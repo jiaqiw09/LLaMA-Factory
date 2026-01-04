@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Unified Efficient Fine-Tuning of 100+ LLMs"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11.0"
+requires-python = ">=3.11.0,<3.14"
 authors = [
     { name = "hiyouga", email = "hiyouga@buaa.edu.cn" }
 ]
@@ -80,6 +80,19 @@ dependencies = [
 dev = ["pre-commit", "ruff", "pytest", "build"]
 metrics = ["nltk", "jieba", "rouge-chinese"]
 deepspeed = ["deepspeed>=0.10.0,<=0.16.9"]
+torch_npu = [
+    "torch==2.7.1",
+    "torch_npu==2.7.1",
+    "torchvision==0.22.1",
+    "torchaudio==2.7.1"
+]
+
+[tool.uv]
+override-dependencies = [
+    "torch==2.7.1; extra == 'torch_npu'",
+    "torchvision==0.22.1; extra == 'torch_npu'",
+    "torchaudio==2.7.1; extra == 'torch_npu'",
+]
 
 [project.scripts]
 llamafactory-cli = "llamafactory.cli:main"
